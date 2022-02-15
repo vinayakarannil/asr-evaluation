@@ -324,10 +324,10 @@ def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suf
                 hyp_tokens.append(hyp_token)
         elif tag == 'insert':
             for i in range(j1, j2):
-                ref_token = colored('*' * len(seq2[i]), 'red')
+                ref_token = colored('*' * len(seq2[i]), 'green')
                 ref_tokens.append(ref_token)
             for i in range(j1, j2):
-                hyp_token = colored(seq2[i].upper(), 'red')
+                hyp_token = colored(seq2[i].upper(), 'green')
                 hyp_tokens.append(hyp_token)
         # More complicated logic for a substitution
         elif tag == 'replace':
@@ -359,8 +359,8 @@ def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suf
                     s1[i] = '*' * len(w2)
                 if not w2:
                     s2[i] = '*' * len(w1)
-            s1 = map(lambda x: colored(x, 'red'), s1)
-            s2 = map(lambda x: colored(x, 'red'), s2)
+            s1 = map(lambda x: colored(x, 'blue'), s1)
+            s2 = map(lambda x: colored(x, 'blue'), s2)
             ref_tokens += s1
             hyp_tokens += s2
     if prefix1: ref_tokens.insert(0, prefix1)
