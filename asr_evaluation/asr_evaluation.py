@@ -245,21 +245,36 @@ def track_confusions(sm, seq1, seq2):
 def print_confusions():
     """Print the confused words that we found... grouped by insertions, deletions
     and substitutions."""
+    
+    import csv
+    import pandas as pd
+    insertions = []
+    substitutions = []
+    deletions = []
     if len(insertion_table) > 0:
         print('INSERTIONS:')
         for item in sorted(list(insertion_table.items()), key=lambda x: x[1], reverse=True):
             if item[1] >= min_count:
                 print('{0:20s} {1:10d}'.format(*item))
+                insertions.append({"word":item[0], "count":item[1]
+                })
     if len(deletion_table) > 0:
         print('DELETIONS:')
         for item in sorted(list(deletion_table.items()), key=lambda x: x[1], reverse=True):
             if item[1] >= min_count:
                 print('{0:20s} {1:10d}'.format(*item))
+                deletions.append({"word":item[0], "count":item[1]
+                })
     if len(substitution_table) > 0:
         print('SUBSTITUTIONS:')
         for [w1, w2], count in sorted(list(substitution_table.items()), key=lambda x: x[1], reverse=True):
             if count >= min_count:
                 print('{0:20s} -> {1:20s}   {2:10d}'.format(w1, w2, count))
+                substitutions.append({"word":w1, "substitution":w2, "count":count
+                })
+    pd.DataFrame(insertions).to_excel("insertions.xls",index=None)
+    pd.DataFrame(deletions).to_excel("deletions.xls",index=None)
+    pd.DataFrame(substitutions).to_excel("substitutions.xls",index=None)
 
 # TODO - For some reason I was getting two different counts depending on how I count the matches,
 # so do an assertion in this code to make sure we're getting matching counts.
