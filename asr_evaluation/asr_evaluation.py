@@ -48,12 +48,11 @@ error_rates = []
 wer_bins = defaultdict(list)
 wer_vs_length = defaultdict(list)
 # Tables for keeping track of which words get confused with one another
-insertion_table = defaultdict(int)
-deletion_table = defaultdict(int)
-substitution_table = defaultdict(int)
+insertion_table = defaultdict(dict)
+deletion_table = defaultdict(dict)
+substitution_table = defaultdict(dict)
 # These are the editdistance opcodes that are condsidered 'errors'
 error_codes = ['replace', 'delete', 'insert']
-
 
 # TODO - rename this function.  Move some of it into evaluate.py?
 def main(args):
@@ -61,18 +60,20 @@ def main(args):
     editdistance.SequenceMatcher objects to compute the edit distance.
     All the statistics necessary statistics are collected, and results are
     printed as specified by the command line options.
-
     This function doesn't not check to ensure that the reference and
     hypothesis file have the same number of lines.  It will stop after the
     shortest one runs out of lines.  This should be easy to fix...
     """
     global counter
     set_global_variables(args)
-
+    filename = ""
     counter = 0
     # Loop through each line of the reference and hyp file
     for ref_line, hyp_line in zip(args.ref, args.hyp):
-        processed_p = process_line_pair(ref_line, hyp_line, case_insensitive=args.case_insensitive,
+        if "_norm.txt" in ref_line:
+            filename = ref_line.replace("_norm.txt\n","")
+            continue
+        processed_p = process_line_pair(ref_line, hyp_line, filename, case_insensitive=args.case_insensitive,
                                         remove_empty_refs=args.remove_empty_refs)
         if processed_p:
             counter += 1
@@ -95,11 +96,10 @@ def main(args):
     print('SER: {:10.3%} ({:10d} / {:10d})'.format(ser, sent_error_count, counter))
 
 
-def process_line_pair(ref_line, hyp_line, case_insensitive=False, remove_empty_refs=False):
+def process_line_pair(ref_line, hyp_line, filename, case_insensitive=False, remove_empty_refs=False):
     """Given a pair of strings corresponding to a reference and hypothesis,
     compute the edit distance, print if desired, and keep track of results
     in global variables.
-
     Return true if the pair was counted, false if the pair was not counted due
     to an empty reference string."""
     # I don't believe these all need to be global.  In any case, they shouldn't be.
@@ -144,7 +144,7 @@ def process_line_pair(ref_line, hyp_line, case_insensitive=False, remove_empty_r
 
     # If we're keeping track of which words get mixed up with which others, call track_confusions
     if confusions:
-        track_confusions(sm, ref, hyp)
+        track_confusions(sm, ref, hyp,filename)
 
     # If we're printing instances, do it here (in roughly the align.c format)
     if print_instances_p or (print_errors_p and errors != 0):
@@ -224,23 +224,39 @@ def print_instances(ref, hyp, sm, id_=None):
     print('Correct          = {0:6.1%}  {1:3d}   ({2:6d})'.format(correct_rate, sm.matches(), len(ref)))
     print('Errors           = {0:6.1%}  {1:3d}   ({2:6d})'.format(error_rate, sm.distance(), len(ref)))
 
-def track_confusions(sm, seq1, seq2):
+def track_confusions(sm, seq1, seq2,filename):
     """Keep track of the errors in a global variable, given a sequence matcher."""
     opcodes = sm.get_opcodes()
+    print(seq1)
     for tag, i1, i2, j1, j2 in opcodes:
         if tag == 'insert':
             for i in range(j1, j2):
                 word = seq2[i]
-                insertion_table[word] += 1
+                if word in insertion_table.keys():
+                    insertion_table[word]['count'] += 1
+                    insertion_table[word]['files'].append(filename)
+                else:
+                    insertion_table[word] = {'count':1, 'files':[filename]}
+                    
         elif tag == 'delete':
             for i in range(i1, i2):
                 word = seq1[i]
-                deletion_table[word] += 1
+                
+                if word in deletion_table.keys():
+                    deletion_table[word]['count'] += 1
+                    deletion_table[word]['files'].append(filename)
+                else:
+                    deletion_table[word] = {'count':1, 'files':[filename]}
         elif tag == 'replace':
             for w1 in seq1[i1:i2]:
                 for w2 in seq2[j1:j2]:
                     key = (w1, w2)
-                    substitution_table[key] += 1
+
+                    if key in substitution_table.keys():
+                        substitution_table[key]['count'] += 1
+                        substitution_table[key]['files'].append(filename)
+                    else:
+                        substitution_table[key] = {'count':1, 'files':[filename]}
 
 def print_confusions():
     """Print the confused words that we found... grouped by insertions, deletions
@@ -253,24 +269,24 @@ def print_confusions():
     deletions = []
     if len(insertion_table) > 0:
         print('INSERTIONS:')
-        for item in sorted(list(insertion_table.items()), key=lambda x: x[1], reverse=True):
-            if item[1] >= min_count:
-                print('{0:20s} {1:10d}'.format(*item))
-                insertions.append({"word":item[0], "count":item[1]
+        for item in sorted(list(insertion_table.items()), key=lambda x: x[1]['count'], reverse=True):
+            if item[1]['count'] >= min_count:
+                print('{0:20s} {1:10d}'.format(item[0],item[1]['count']))
+                insertions.append({"word":item[0], "count":item[1]['count'],"files":item[1]['files'] 
                 })
     if len(deletion_table) > 0:
         print('DELETIONS:')
-        for item in sorted(list(deletion_table.items()), key=lambda x: x[1], reverse=True):
-            if item[1] >= min_count:
-                print('{0:20s} {1:10d}'.format(*item))
-                deletions.append({"word":item[0], "count":item[1]
+        for item in sorted(list(deletion_table.items()), key=lambda x: x[1]['count'], reverse=True):
+            if item[1]['count'] >= min_count:
+                print('{0:20s} {1:10d}'.format(item[0],item[1]['count']))
+                deletions.append({"word":item[0], "count":item[1]['count'],"files":item[1]['files']
                 })
     if len(substitution_table) > 0:
         print('SUBSTITUTIONS:')
-        for [w1, w2], count in sorted(list(substitution_table.items()), key=lambda x: x[1], reverse=True):
-            if count >= min_count:
-                print('{0:20s} -> {1:20s}   {2:10d}'.format(w1, w2, count))
-                substitutions.append({"word":w1, "substitution":w2, "count":count
+        for [w1, w2], second in sorted(list(substitution_table.items()), key=lambda x: x[1]['count'], reverse=True):
+            if second['count'] >= min_count:
+                print('{0:20s} -> {1:20s}   {2:10d}'.format(w1, w2, second['count']))
+                substitutions.append({"word":w1, "substitution":w2, "count":second['count'],"files":second['files']
                 })
     pd.DataFrame(insertions).to_excel("insertions.xls",index=None)
     pd.DataFrame(deletions).to_excel("deletions.xls",index=None)
