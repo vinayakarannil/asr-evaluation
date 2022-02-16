@@ -227,7 +227,6 @@ def print_instances(ref, hyp, sm, id_=None):
 def track_confusions(sm, seq1, seq2,filename):
     """Keep track of the errors in a global variable, given a sequence matcher."""
     opcodes = sm.get_opcodes()
-    print(seq1)
     for tag, i1, i2, j1, j2 in opcodes:
         if tag == 'insert':
             for i in range(j1, j2):
