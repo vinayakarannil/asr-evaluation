@@ -20,7 +20,7 @@ from __future__ import division
 
 from functools import reduce
 from collections import defaultdict
-from edit_distance import SequenceMatcher
+
 
 from termcolor import colored
 
@@ -51,8 +51,394 @@ wer_vs_length = defaultdict(list)
 insertion_table = defaultdict(dict)
 deletion_table = defaultdict(dict)
 substitution_table = defaultdict(dict)
+ignored_count = 0
+total_errors = 0
 # These are the editdistance opcodes that are condsidered 'errors'
 error_codes = ['replace', 'delete', 'insert']
+mono_syllables = ["है","हैं","हो","हे","हूँ","हूं","हुं","हाँ","हु","हाँ","भी","जो","जी","तो","ने","ह","का","की","को","के","से","ना"]
+
+import sys
+import operator
+from typing import Sequence
+
+INSERT: str = "insert"
+DELETE: str = "delete"
+EQUAL: str = "equal"
+REPLACE: str = "replace"
+
+
+# Cost is basically: was there a match or not.
+# The other numbers are cumulative costs and matches.
+
+
+def lowest_cost_action(ic, dc, sc, im, dm, sm, cost) -> str:
+    """Given the following values, choose the action (insertion, deletion,
+    or substitution), that results in the lowest cost (ties are broken using
+    the 'match' score).  This is used within the dynamic programming algorithm.
+    * ic - insertion cost
+    * dc - deletion cost
+    * sc - substitution cost
+    * im - insertion match (score)
+    * dm - deletion match (score)
+    * sm - substitution match (score)
+    """
+    best_action = None
+    best_match_count = -1
+    min_cost = min(ic, dc, sc)
+    if min_cost == sc and cost == 0:
+        best_action = EQUAL
+        best_match_count = sm
+    elif min_cost == sc and cost == 1:
+        best_action = REPLACE
+        best_match_count = sm
+    elif min_cost == ic and im > best_match_count:
+        best_action = INSERT
+        best_match_count = im
+    elif min_cost == dc and dm > best_match_count:
+        best_action = DELETE
+        best_match_count = dm
+    else:
+        raise Exception("internal error: invalid lowest cost action")
+    return best_action
+
+
+def highest_match_action(ic, dc, sc, im, dm, sm, cost) -> str:
+    """Given the following values, choose the action (insertion, deletion, or
+    substitution), that results in the highest match score (ties are broken
+    using the distance values).  This is used within the dynamic programming
+    algorithm.
+    * ic - insertion cost
+    * dc - deletion cost
+    * sc - substitution cost
+    * im - insertion match (score)
+    * dm - deletion match (score)
+    * sm - substitution match (score)
+    """
+    best_action = None
+    lowest_cost = float("inf")
+    max_match = max(im, dm, sm)
+    if max_match == sm and cost == 0:
+        best_action = EQUAL
+        lowest_cost = sm
+    elif max_match == sm and cost == 1:
+        best_action = REPLACE
+        lowest_cost = sm
+    elif max_match == im and ic < lowest_cost:
+        best_action = INSERT
+        lowest_cost = ic
+    elif max_match == dm and dc < lowest_cost:
+        best_action = DELETE
+        lowest_cost = dc
+    else:
+        raise Exception("internal error: invalid highest match action")
+    return best_action
+
+
+class SequenceMatcher(object):
+    """
+    Similar to the :py:mod:`difflib` :py:class:`~difflib.SequenceMatcher`, but
+    uses Levenshtein/edit distance.
+    """
+
+    def __init__(
+        self,
+        a: Sequence = None,
+        b: Sequence = None,
+        test=operator.eq,
+        action_function=lowest_cost_action,
+    ):
+        """
+        Initialize the object with sequences a and b.  Optionally, one can
+        specify a test function that is used to compare sequence elements. This
+        defaults to the built in ``eq`` operator (i.e. :py:func:`operator.eq`).
+        """
+        if a is None:
+            a = []
+        if b is None:
+            b = []
+        self.seq1 = a
+        self.seq2 = b
+        self._reset_object()
+        self.action_function = action_function
+        self.test = test
+        self.dist = None
+        self._matches = None
+        self.opcodes = None
+
+    def set_seqs(self, a: Sequence, b: Sequence) -> None:
+        """Specify two alternative sequences -- reset any cached values."""
+        self.set_seq1(a)
+        self.set_seq2(b)
+        self._reset_object()
+
+    def _reset_object(self) -> None:
+        """Clear out the cached values for distance, matches, and opcodes."""
+        self.opcodes = None
+        self.dist = None
+        self._matches = None
+
+    def set_seq1(self, a: Sequence) -> None:
+        """Specify a new sequence for sequence 1, resetting cached values."""
+        self._reset_object()
+        self.seq1 = a
+
+    def set_seq2(self, b: Sequence) -> None:
+        """Specify a new sequence for sequence 2, resetting cached values."""
+        self._reset_object()
+        self.seq2 = b
+
+    def find_longest_match(self, alo, ahi, blo, bhi) -> None:
+        """Not implemented!"""
+        raise NotImplementedError()
+
+    def get_matching_blocks(self):
+        """Similar to :py:meth:`get_opcodes`, but returns only the opcodes that are
+        equal and returns them in a somewhat different format
+        (i.e. ``(i, j, n)`` )."""
+        opcodes = self.get_opcodes()
+        match_opcodes = filter(lambda x: x[0] == EQUAL, opcodes)
+        return map(
+            lambda opcode: [opcode[1], opcode[3], opcode[2] - opcode[1]], match_opcodes
+        )
+
+    def get_opcodes(self):
+        """Returns a list of opcodes.  Opcodes are the same as defined by
+        :py:mod:`difflib`."""
+        if not self.opcodes:
+            d, m, opcodes = edit_distance_backpointer(
+                self.seq1,
+                self.seq2,
+                action_function=self.action_function,
+                test=self.test,
+            )
+            print(d,m)
+            if self.dist:
+                assert d == self.dist
+            if self._matches:
+                assert m == self._matches
+            self.dist = d
+            self._matches = m
+            self.opcodes = opcodes
+        return self.opcodes
+
+    def get_grouped_opcodes(self, n=None):
+        """Not implemented!"""
+        raise NotImplementedError()
+
+    def ratio(self) -> float:
+        """Ratio of matches to the average sequence length."""
+        return 2.0 * self.matches() / (len(self.seq1) + len(self.seq2))
+
+    def quick_ratio(self) -> float:
+        """Same as :py:meth:`ratio`."""
+        return self.ratio()
+
+    def real_quick_ratio(self) -> float:
+        """Same as :py:meth:`ratio`."""
+        return self.ratio()
+
+    def _compute_distance_fast(self) -> None:
+        """Calls edit_distance, and asserts that if we already have values for
+        matches and distance, that they match."""
+        d, m = edit_distance(
+            self.seq1, self.seq2, action_function=self.action_function, test=self.test
+        )
+        if self.dist:
+            assert d == self.dist
+        if self._matches:
+            
+            assert m == self._matches
+        self.dist = d
+        self._matches = m
+
+    def distance(self):
+        """Returns the edit distance of the two loaded sequences.  This should
+        be a little faster than getting the same information from
+        :py:meth:`get_opcodes`."""
+        
+        if not self.dist:
+            self._compute_distance_fast()
+        return self.dist
+
+    def matches(self):
+        """Returns the number of matches in the alignment of the two sequences.
+        This should be a little faster than getting the same information from
+        :py:meth:`get_opcodes`."""
+        if not self._matches:
+            self._compute_distance_fast()
+        return self._matches
+
+
+def edit_distance(
+    seq1: Sequence, seq2: Sequence, action_function=lowest_cost_action, test=operator.eq
+):
+    """
+    Computes the edit distance between the two given sequences.  This uses the
+    relatively fast method that only constructs two columns of the 2d array
+    for edits.  This function actually uses four columns because we track the
+    number of matches too.
+    """
+    
+    m = len(seq1)
+    n = len(seq2)
+    # Special, easy cases:
+    if seq1 == seq2:
+        
+        return 0, n
+    if m == 0:
+        return n, 0
+    if n == 0:
+        return m, 0
+    v0 = [0] * (n + 1)  # The two 'error' columns
+    v1 = [0] * (n + 1)
+    m0 = [0] * (n + 1)  # The two 'match' columns
+    m1 = [0] * (n + 1)
+    for i in range(1, n + 1):
+        v0[i] = i
+    for i in range(1, m + 1):
+        v1[0] = i
+        for j in range(1, n + 1):
+            cost = 0 if test(seq1[i - 1], seq2[j - 1]) else 1
+            
+            # The costs
+            ins_cost = v1[j - 1] + 1
+            del_cost = v0[j] + 1
+            sub_cost = v0[j - 1] + cost
+            # Match counts
+            ins_match = m1[j - 1]
+            del_match = m0[j]
+            sub_match = m0[j - 1] + int(not cost)
+
+            action = action_function(
+                ins_cost, del_cost, sub_cost, ins_match, del_match, sub_match, cost
+            )
+
+            if action in [EQUAL, REPLACE]:
+                v1[j] = sub_cost
+                m1[j] = sub_match
+            elif action == INSERT:
+                v1[j] = ins_cost
+                m1[j] = ins_match
+            elif action == DELETE:
+                v1[j] = del_cost
+                m1[j] = del_match
+            else:
+                raise Exception("Invalid dynamic programming option returned!")
+                # Copy the columns over
+        for k in range(n + 1):
+            v0[k] = v1[k]
+            m0[k] = m1[k]
+    return v1[n], m1[n]
+
+
+def edit_distance_backpointer(
+    seq1, seq2, action_function=lowest_cost_action, test=operator.eq
+):
+    """
+    Similar to :py:func:`~edit_distance.edit_distance` except that this
+    function keeps backpointers during the search.  This allows us to return
+    the opcodes (i.e. the specific edits that were used to change from one
+    string to another).  This function contructs the full 2d array for the
+    backpointers only.
+    """
+    
+    m: int = len(seq1)
+    n: int = len(seq2)
+    # backpointer array:
+    bp = [[None for x in range(n + 1)] for y in range(m + 1)]
+    tp = [[None for x in range(n + 1)] for y in range(m + 1)]
+
+            
+
+    # Two columns of the distance and match arrays
+    d0 = [0] * (n + 1)  # The two 'distance' columns
+    d1 = [0] * (n + 1)
+    m0 = [0] * (n + 1)  # The two 'match' columns
+    m1 = [0] * (n + 1)
+
+    # Fill in the first column
+    for i in range(1, n + 1):
+        d0[i] = i
+        bp[0][i] = INSERT
+
+    for i in range(1, m + 1):
+        d1[0] = i
+        bp[i][0] = DELETE
+
+        for j in range(1, n + 1):
+
+            cost = 0 if test(seq1[i - 1], seq2[j - 1]) else 1
+#             if cost and (seq2[j - 1] in mono_syllables or seq1[i - 1] in mono_syllables):
+                
+            # The costs of each action...
+            ins_cost = d1[j - 1] + 1  # insertion
+            del_cost = d0[j] + 1  # deletion
+            sub_cost = d0[j - 1] + cost  # substitution/match
+
+            # The match scores of each action
+            ins_match = m1[j - 1]
+            del_match = m0[j]
+            sub_match = m0[j - 1] + int(not cost)
+
+            action = action_function(
+                ins_cost, del_cost, sub_cost, ins_match, del_match, sub_match, cost
+            )
+            if action == EQUAL:
+                d1[j] = sub_cost
+                m1[j] = sub_match
+                bp[i][j] = EQUAL
+                tp[i][j] = seq1[i - 1]+"$"+seq2[j - 1]
+            elif action == REPLACE:
+                d1[j] = sub_cost
+                m1[j] = sub_match
+                bp[i][j] = REPLACE
+                tp[i][j] = seq1[i - 1]+"$"+seq2[j - 1]
+                
+            elif action == INSERT:
+                d1[j] = ins_cost
+                m1[j] = ins_match
+                bp[i][j] = INSERT
+                tp[i][j] = ""+"$"+seq2[j - 1]
+            elif action == DELETE:
+                d1[j] = del_cost
+                m1[j] = del_match
+                bp[i][j] = DELETE
+                tp[i][j] = seq1[i - 1]+"$"+" "
+            else:
+                raise Exception("Invalid dynamic programming action returned!")
+        # copy over the columns
+        for k in range(n + 1):
+            d0[k] = d1[k]
+            m0[k] = m1[k]
+    opcodes = get_opcodes_from_bp_table(bp,tp)
+#     print(opcodes)
+    return d1[n], m1[n], opcodes
+
+
+def get_opcodes_from_bp_table(bp,tp):
+    """Given a 2d list structure, create opcodes from the best path."""
+    x = len(bp) - 1
+    y = len(bp[0]) - 1
+    opcodes = []
+    while x != 0 or y != 0:
+        this_bp = bp[x][y]
+        if tp[x][y]:
+            tt = tp[x][y].split("$")
+        
+        if this_bp in [EQUAL, REPLACE]:
+            opcodes.append([this_bp, max(x - 1, 0), x, max(y - 1, 0), y,tt[0],tt[1]])
+            x = x - 1
+            y = y - 1
+        elif this_bp == INSERT:
+            opcodes.append([INSERT, x, x, max(y - 1, 0), y,tt[0],tt[1]])
+            y = y - 1
+        elif this_bp == DELETE:
+            opcodes.append([DELETE, max(x - 1, 0), x, max(y - 1, 0), max(y - 1, 0),tt[0],tt[1]])
+            x = x - 1
+        else:
+            raise Exception("Invalid dynamic programming action in BP table!")
+    opcodes.reverse()
+    return opcodes
 
 # TODO - rename this function.  Move some of it into evaluate.py?
 def main(args):
@@ -65,6 +451,9 @@ def main(args):
     shortest one runs out of lines.  This should be easy to fix...
     """
     global counter
+    global ignored_count
+    global total_errors
+
     set_global_variables(args)
     filename = ""
     counter = 0
@@ -94,6 +483,10 @@ def main(args):
     print('WER: {:10.3%} ({:10d} / {:10d})'.format(wer, error_count, ref_token_count))
     print('WRR: {:10.3%} ({:10d} / {:10d})'.format(wrr, match_count, ref_token_count))
     print('SER: {:10.3%} ({:10d} / {:10d})'.format(ser, sent_error_count, counter))
+    print('IGNORED: {:10d}'.format(ignored_count))
+    print('ERRORS: {:10d}'.format(total_errors))
+
+
 
 
 def process_line_pair(ref_line, hyp_line, filename, case_insensitive=False, remove_empty_refs=False):
@@ -107,6 +500,7 @@ def process_line_pair(ref_line, hyp_line, filename, case_insensitive=False, remo
     global match_count
     global ref_token_count
     global sent_error_count
+    global ignored_count
 
     # Split into tokens by whitespace
     ref = ref_line.split()
@@ -206,6 +600,8 @@ def remove_tail_id(ref, hyp):
 
 def print_instances(ref, hyp, sm, id_=None):
     """Print a single instance of a ref/hyp pair."""
+    global ignored_count
+    global total_errors
     print_diff(sm, ref, hyp)
     if id_:
         print(('SENTENCE {0:d}  {1!s}'.format(counter + 1, id_)))
@@ -223,14 +619,20 @@ def print_instances(ref, hyp, sm, id_=None):
         error_rate = sm.matches()
     print('Correct          = {0:6.1%}  {1:3d}   ({2:6d})'.format(correct_rate, sm.matches(), len(ref)))
     print('Errors           = {0:6.1%}  {1:3d}   ({2:6d})'.format(error_rate, sm.distance(), len(ref)))
+    print('IGNORED:',ignored_count)
+    print('ERRORs:',total_errors)
+    
 
 def track_confusions(sm, seq1, seq2,filename):
     """Keep track of the errors in a global variable, given a sequence matcher."""
     opcodes = sm.get_opcodes()
-    for tag, i1, i2, j1, j2 in opcodes:
+    #print(seq1)
+    for tag, i1, i2, j1, j2,tt1,tt2 in opcodes:
         if tag == 'insert':
             for i in range(j1, j2):
                 word = seq2[i]
+                if word in mono_syllables:
+                    continue
                 if word in insertion_table.keys():
                     insertion_table[word]['count'] += 1
                     insertion_table[word]['files'].append(filename)
@@ -240,7 +642,8 @@ def track_confusions(sm, seq1, seq2,filename):
         elif tag == 'delete':
             for i in range(i1, i2):
                 word = seq1[i]
-                
+                if word in mono_syllables:
+                    continue
                 if word in deletion_table.keys():
                     deletion_table[word]['count'] += 1
                     deletion_table[word]['files'].append(filename)
@@ -250,7 +653,8 @@ def track_confusions(sm, seq1, seq2,filename):
             for w1 in seq1[i1:i2]:
                 for w2 in seq2[j1:j2]:
                     key = (w1, w2)
-
+                    if w1 in mono_syllables or w2 in mono_syllables:
+                        continue
                     if key in substitution_table.keys():
                         substitution_table[key]['count'] += 1
                         substitution_table[key]['files'].append(filename)
@@ -308,9 +712,52 @@ def get_match_count(sm):
 def get_error_count(sm):
     """Return the number of errors (insertion, deletion, and substitutiions
     , given a sequence matcher object."""
+    global ignored_count
+    global total_errors
     opcodes = sm.get_opcodes()
-    errors = [x for x in opcodes if x[0] in error_codes]
+    #print(len(opcodes))
+    #[print(x) for x in opcodes if x[0] == 'replace' and x[5] in mono_syllables]
+    errors = []
+    for x in opcodes:
+        if x[0] == 'delete' and x[5] not in mono_syllables:
+            errors.append(x)
+            total_errors+=1
+            
+        elif x[0] == 'insert' and x[6] not in mono_syllables:
+            errors.append(x)
+            total_errors+=1
+        elif x[0] == 'replace' and not (x[5] in mono_syllables and x[6] in mono_syllables):
+#             if x[5] not in mono_syllables and x[6] not in mono_syllables:
+#                 errors.append(x)
+#                 total_errors+=1
+                
+#             elif x[5] in mono_syllables and x[6] not in mono_syllables:
+#                 errors.append(x)
+#                 total_errors+=1
+                
+#             elif x[5] not in mono_syllables and x[6] in mono_syllables:
+                errors.append(x)
+
+                total_errors+=1
+    
+    
+            
+    # just print what we are ignoring  
+    for x in opcodes:
+        if x[0] == 'delete' and x[5] in mono_syllables:
+            print(x)
+            ignored_count+=1
+        elif x[0] == 'insert' and x[6] in mono_syllables:
+            print(x)
+            ignored_count+=1
+        elif x[0] == 'replace' and (x[5] in mono_syllables and x[6] in mono_syllables):
+            print(x)
+            ignored_count+=1
+            
+    
+    #errors = [x for x in opcodes if x[0] in error_codes and x[5] not in mono_syllables ]
     error_lengths = [max(x[2] - x[1], x[4] - x[3]) for x in errors]
+    #print(errors, error_lengths)
     return reduce(lambda x, y: x + y, error_lengths, 0)
 
 # TODO - This is long and ugly.  Perhaps we can break it up?
@@ -321,7 +768,7 @@ def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suf
     ref_tokens = []
     hyp_tokens = []
     opcodes = sm.get_opcodes()
-    for tag, i1, i2, j1, j2 in opcodes:
+    for tag, i1, i2, j1, j2,tt1,tt2 in opcodes:
         # If they are equal, do nothing except lowercase them
         if tag == 'equal':
             for i in range(i1, i2):
@@ -332,18 +779,34 @@ def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suf
         # make the other all caps
         elif tag == 'delete':
             for i in range(i1, i2):
-                ref_token = colored(seq1[i].upper(), 'red')
-                ref_tokens.append(ref_token)
+                if seq1[i] in mono_syllables:
+                    ref_token = colored(seq1[i].upper(), 'magenta','on_yellow')
+                    ref_tokens.append(ref_token)
+                else:
+                    ref_token = colored(seq1[i].upper(), 'red')
+                    ref_tokens.append(ref_token)
             for i in range(i1, i2):
-                hyp_token = colored('*' * len(seq1[i]), 'red')
-                hyp_tokens.append(hyp_token)
+                if seq1[i] in mono_syllables:
+                    hyp_token = colored('*' * len(seq1[i]), 'magenta','on_yellow')
+                    hyp_tokens.append(hyp_token)
+                else:
+                    hyp_token = colored('*' * len(seq1[i]), 'red')
+                    hyp_tokens.append(hyp_token)
         elif tag == 'insert':
             for i in range(j1, j2):
-                ref_token = colored('*' * len(seq2[i]), 'green')
-                ref_tokens.append(ref_token)
+                if seq2[i] in mono_syllables:
+                    ref_token = colored('*' * len(seq2[i]), 'magenta','on_cyan')
+                    ref_tokens.append(ref_token)
+                else:
+                    ref_token = colored('*' * len(seq2[i]), 'green')
+                    ref_tokens.append(ref_token)
             for i in range(j1, j2):
-                hyp_token = colored(seq2[i].upper(), 'green')
-                hyp_tokens.append(hyp_token)
+                if seq2[i] in mono_syllables:
+                    hyp_token = colored(seq2[i].upper(), 'magenta','on_cyan')
+                    hyp_tokens.append(hyp_token)
+                else:
+                    hyp_token = colored(seq2[i].upper(), 'green')
+                    hyp_tokens.append(hyp_token)
         # More complicated logic for a substitution
         elif tag == 'replace':
             seq1_len = i2 - i1
@@ -374,8 +837,13 @@ def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suf
                     s1[i] = '*' * len(w2)
                 if not w2:
                     s2[i] = '*' * len(w1)
-            s1 = map(lambda x: colored(x, 'blue'), s1)
-            s2 = map(lambda x: colored(x, 'blue'), s2)
+#             print(w1,w2,s1,s2)     
+            if w1 in mono_syllables and w2 in mono_syllables:       
+                s1 = map(lambda x: colored(x, 'magenta','on_grey'), s1)
+                s2 = map(lambda x: colored(x, 'magenta','on_grey'), s2)
+            else:
+                s1 = map(lambda x: colored(x, 'blue'), s1)
+                s2 = map(lambda x: colored(x, 'blue'), s2)
             ref_tokens += s1
             hyp_tokens += s2
     if prefix1: ref_tokens.insert(0, prefix1)
