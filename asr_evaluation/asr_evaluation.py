@@ -23,7 +23,7 @@ from collections import defaultdict
 
 
 from termcolor import colored
-
+import pandas as pd
 # Some defaults
 print_instances_p = False
 print_errors_p = False
@@ -53,6 +53,9 @@ deletion_table = defaultdict(dict)
 substitution_table = defaultdict(dict)
 ignored_count = 0
 total_errors = 0
+total_sub = 0
+total_ins = 0
+total_del = 0
 # These are the editdistance opcodes that are condsidered 'errors'
 error_codes = ['replace', 'delete', 'insert']
 mono_syllables = ["है","हैं","हो","हे","हूँ","हूं","हुं","हाँ","हु","हाँ","भी","जो","जी","तो","ने","ह","का","की","को","के","से","ना"]
@@ -211,7 +214,7 @@ class SequenceMatcher(object):
                 action_function=self.action_function,
                 test=self.test,
             )
-            print(d,m)
+            #print(d,m)
             if self.dist:
                 assert d == self.dist
             if self._matches:
@@ -368,7 +371,6 @@ def edit_distance_backpointer(
         for j in range(1, n + 1):
 
             cost = 0 if test(seq1[i - 1], seq2[j - 1]) else 1
-#             if cost and (seq2[j - 1] in mono_syllables or seq1[i - 1] in mono_syllables):
                 
             # The costs of each action...
             ins_cost = d1[j - 1] + 1  # insertion
@@ -453,17 +455,32 @@ def main(args):
     global counter
     global ignored_count
     global total_errors
+    global total_sub
+    global total_ins
+    global total_del
 
     set_global_variables(args)
     filename = ""
     counter = 0
+    calc_table = []
     # Loop through each line of the reference and hyp file
     for ref_line, hyp_line in zip(args.ref, args.hyp):
         if "_norm.txt" in ref_line:
             filename = ref_line.replace("_norm.txt\n","")
+            print(filename)
             continue
-        processed_p = process_line_pair(ref_line, hyp_line, filename, case_insensitive=args.case_insensitive,
+        processed_p,calc = process_line_pair(ref_line, hyp_line, filename, case_insensitive=args.case_insensitive,
                                         remove_empty_refs=args.remove_empty_refs)
+        
+        if calc is not None:
+            calc_table.append({
+                'File':filename,
+                'Total words':calc[0],
+                'Correct':calc[1],
+                'Error':calc[2],
+                'WER':calc[3],
+                'WRR':calc[4]})
+        
         if processed_p:
             counter += 1
     if confusions:
@@ -483,8 +500,12 @@ def main(args):
     print('WER: {:10.3%} ({:10d} / {:10d})'.format(wer, error_count, ref_token_count))
     print('WRR: {:10.3%} ({:10d} / {:10d})'.format(wrr, match_count, ref_token_count))
     print('SER: {:10.3%} ({:10d} / {:10d})'.format(ser, sent_error_count, counter))
-    print('IGNORED: {:10d}'.format(ignored_count))
-    print('ERRORS: {:10d}'.format(total_errors))
+    print('TOTAL_ERRORS: {:10d}'.format(total_errors//2))
+    print('SUBSTITUTIONS: {:10d} {:10.3%}'.format(total_sub//2, (total_sub//2)/error_count))
+    print('DELETIONS: {:10d} {:10.3%}'.format(total_del//2, (total_del//2)/error_count))
+    print('INSERTIONS: {:10d} {:10.3%}'.format(total_ins//2, (total_ins//2)/error_count))
+    
+    pd.DataFrame(calc_table).to_csv("detailed_results.csv",index=None)
 
 
 
@@ -524,7 +545,8 @@ def process_line_pair(ref_line, hyp_line, filename, case_insensitive=False, remo
     # Create an object to get the edit distance, and then retrieve the
     # relevant counts that we need.
     sm = SequenceMatcher(a=ref, b=hyp)
-    errors = get_error_count(sm)
+    errors = get_error_count(sm,PRINT=False)
+    
     matches = get_match_count(sm)
     ref_length = len(ref)
 
@@ -542,7 +564,7 @@ def process_line_pair(ref_line, hyp_line, filename, case_insensitive=False, remo
 
     # If we're printing instances, do it here (in roughly the align.c format)
     if print_instances_p or (print_errors_p and errors != 0):
-        print_instances(ref, hyp, sm, id_=id_)
+        calc = print_instances(ref, hyp, sm, id_=id_)
 
     # Keep track of the individual error rates, and reference lengths, so we
     # can compute average WERs by sentence length
@@ -550,7 +572,11 @@ def process_line_pair(ref_line, hyp_line, filename, case_insensitive=False, remo
     error_rate = errors * 1.0 / len(ref) if len(ref) > 0 else float("inf")
     error_rates.append(error_rate)
     wer_bins[len(ref)].append(error_rate)
-    return True
+    if print_instances_p or (print_errors_p and errors != 0):
+        return True, calc
+    else:
+        return True, None
+
 
 def set_global_variables(args):
     """Copy argparse args into global variables."""
@@ -607,26 +633,31 @@ def print_instances(ref, hyp, sm, id_=None):
         print(('SENTENCE {0:d}  {1!s}'.format(counter + 1, id_)))
     else:
         print('SENTENCE {0:d}'.format(counter + 1))
+    
+    errors = get_error_count(sm,PRINT=False)
+    matches = get_match_count(sm)
+    
     # Handle cases where the reference is empty without dying
     if len(ref) != 0:
-        correct_rate = sm.matches() / len(ref)
-        error_rate = sm.distance() / len(ref)
-    elif sm.matches() == 0:
+        correct_rate = matches / len(ref)
+        error_rate = errors / len(ref)
+    elif matches == 0:
         correct_rate = 1.0
         error_rate = 0.0
     else:
         correct_rate = 0.0
-        error_rate = sm.matches()
-    print('Correct          = {0:6.1%}  {1:3d}   ({2:6d})'.format(correct_rate, sm.matches(), len(ref)))
-    print('Errors           = {0:6.1%}  {1:3d}   ({2:6d})'.format(error_rate, sm.distance(), len(ref)))
-    print('IGNORED:',ignored_count)
-    print('ERRORs:',total_errors)
+        error_rate = matches
+        
+        
+    print('Correct          = {0:6.1%}  {1:3d}   ({2:6d})'.format(correct_rate, matches, len(ref)))
+    print('Errors           = {0:6.1%}  {1:3d}   ({2:6d})'.format(error_rate, errors, len(ref)))
+
+    return (len(ref),matches,errors,error_rate,correct_rate)
     
 
 def track_confusions(sm, seq1, seq2,filename):
     """Keep track of the errors in a global variable, given a sequence matcher."""
     opcodes = sm.get_opcodes()
-    #print(seq1)
     for tag, i1, i2, j1, j2,tt1,tt2 in opcodes:
         if tag == 'insert':
             for i in range(j1, j2):
@@ -653,7 +684,7 @@ def track_confusions(sm, seq1, seq2,filename):
             for w1 in seq1[i1:i2]:
                 for w2 in seq2[j1:j2]:
                     key = (w1, w2)
-                    if w1 in mono_syllables or w2 in mono_syllables:
+                    if w1 in mono_syllables and w2 in mono_syllables:
                         continue
                     if key in substitution_table.keys():
                         substitution_table[key]['count'] += 1
@@ -691,9 +722,9 @@ def print_confusions():
                 print('{0:20s} -> {1:20s}   {2:10d}'.format(w1, w2, second['count']))
                 substitutions.append({"word":w1, "substitution":w2, "count":second['count'],"files":second['files']
                 })
-    pd.DataFrame(insertions).to_excel("insertions.xls",index=None)
-    pd.DataFrame(deletions).to_excel("deletions.xls",index=None)
-    pd.DataFrame(substitutions).to_excel("substitutions.xls",index=None)
+    pd.DataFrame(insertions).to_csv("insertions.csv",index=None)
+    pd.DataFrame(deletions).to_csv("deletions.csv",index=None)
+    pd.DataFrame(substitutions).to_csv("substitutions.csv",index=None)
 
 # TODO - For some reason I was getting two different counts depending on how I count the matches,
 # so do an assertion in this code to make sure we're getting matching counts.
@@ -709,11 +740,16 @@ def get_match_count(sm):
     return matches
 
 
-def get_error_count(sm):
+def get_error_count(sm, PRINT=True):
     """Return the number of errors (insertion, deletion, and substitutiions
     , given a sequence matcher object."""
     global ignored_count
     global total_errors
+    global total_sub
+    global total_ins
+    global total_del
+    
+    
     opcodes = sm.get_opcodes()
     #print(len(opcodes))
     #[print(x) for x in opcodes if x[0] == 'replace' and x[5] in mono_syllables]
@@ -722,42 +758,34 @@ def get_error_count(sm):
         if x[0] == 'delete' and x[5] not in mono_syllables:
             errors.append(x)
             total_errors+=1
-            
+            total_del+=1
         elif x[0] == 'insert' and x[6] not in mono_syllables:
             errors.append(x)
             total_errors+=1
+            total_ins+=1
         elif x[0] == 'replace' and not (x[5] in mono_syllables and x[6] in mono_syllables):
-#             if x[5] not in mono_syllables and x[6] not in mono_syllables:
-#                 errors.append(x)
-#                 total_errors+=1
-                
-#             elif x[5] in mono_syllables and x[6] not in mono_syllables:
-#                 errors.append(x)
-#                 total_errors+=1
-                
-#             elif x[5] not in mono_syllables and x[6] in mono_syllables:
-                errors.append(x)
 
-                total_errors+=1
-    
-    
+            errors.append(x)
+
+            total_errors+=1
+            total_sub +=1
+    # just print what we are ignoring 
+    if PRINT:
+        for x in opcodes:
+            if x[0] == 'delete' and x[5] in mono_syllables:
+                print(x)
+                ignored_count+=1
+            elif x[0] == 'insert' and x[6] in mono_syllables:
+                print(x)
+                ignored_count+=1
+            elif x[0] == 'replace' and (x[5] in mono_syllables and x[6] in mono_syllables):
+                print(x)
+                ignored_count+=1
             
-    # just print what we are ignoring  
-    for x in opcodes:
-        if x[0] == 'delete' and x[5] in mono_syllables:
-            print(x)
-            ignored_count+=1
-        elif x[0] == 'insert' and x[6] in mono_syllables:
-            print(x)
-            ignored_count+=1
-        elif x[0] == 'replace' and (x[5] in mono_syllables and x[6] in mono_syllables):
-            print(x)
-            ignored_count+=1
-            
-    
+    # original error extracttion code
     #errors = [x for x in opcodes if x[0] in error_codes and x[5] not in mono_syllables ]
+    
     error_lengths = [max(x[2] - x[1], x[4] - x[3]) for x in errors]
-    #print(errors, error_lengths)
     return reduce(lambda x, y: x + y, error_lengths, 0)
 
 # TODO - This is long and ugly.  Perhaps we can break it up?
@@ -837,7 +865,6 @@ def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suf
                     s1[i] = '*' * len(w2)
                 if not w2:
                     s2[i] = '*' * len(w1)
-#             print(w1,w2,s1,s2)     
             if w1 in mono_syllables and w2 in mono_syllables:       
                 s1 = map(lambda x: colored(x, 'magenta','on_grey'), s1)
                 s2 = map(lambda x: colored(x, 'magenta','on_grey'), s2)
