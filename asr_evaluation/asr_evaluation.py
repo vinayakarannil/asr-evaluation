@@ -467,7 +467,9 @@ def main(args):
     for ref_line, hyp_line in zip(args.ref, args.hyp):
         if "_norm.txt" in ref_line:
             filename = ref_line.replace("_norm.txt\n","")
-            print(filename)
+            if not confusions:
+                print('\n')
+                print(filename)
             continue
         processed_p,calc = process_line_pair(ref_line, hyp_line, filename, case_insensitive=args.case_insensitive,
                                         remove_empty_refs=args.remove_empty_refs)
@@ -497,15 +499,16 @@ def main(args):
     # Compute SER
     ser = sent_error_count / counter if counter > 0 else 0.0
     print('Sentence count: {}'.format(counter))
-    print('WER: {:10.3%} ({:10d} / {:10d})'.format(wer, error_count, ref_token_count))
-    print('WRR: {:10.3%} ({:10d} / {:10d})'.format(wrr, match_count, ref_token_count))
+    print('WER: {:10.3%} ({:10d} / {:10d})'.format(wer, error_count, error_count+match_count))
+    print('WRR: {:10.3%} ({:10d} / {:10d})'.format(wrr, match_count, error_count+match_count))
     print('SER: {:10.3%} ({:10d} / {:10d})'.format(ser, sent_error_count, counter))
     print('TOTAL_ERRORS: {:10d}'.format(total_errors//2))
     print('SUBSTITUTIONS: {:10d} {:10.3%}'.format(total_sub//2, (total_sub//2)/error_count))
     print('DELETIONS: {:10d} {:10.3%}'.format(total_del//2, (total_del//2)/error_count))
     print('INSERTIONS: {:10d} {:10.3%}'.format(total_ins//2, (total_ins//2)/error_count))
     
-    pd.DataFrame(calc_table).to_csv("detailed_results.csv",index=None)
+    if not confusions:
+        pd.DataFrame(calc_table).to_csv("detailed_results.csv",index=None)
 
 
 
@@ -649,10 +652,10 @@ def print_instances(ref, hyp, sm, id_=None):
         error_rate = matches
         
         
-    print('Correct          = {0:6.1%}  {1:3d}   ({2:6d})'.format(correct_rate, matches, len(ref)))
-    print('Errors           = {0:6.1%}  {1:3d}   ({2:6d})'.format(error_rate, errors, len(ref)))
+    print('Correct          = {0:6.1%}  {1:3d}   ({2:6d})'.format(correct_rate, matches, matches+errors))
+    print('Errors           = {0:6.1%}  {1:3d}   ({2:6d})'.format(error_rate, errors, matches+errors))
 
-    return (len(ref),matches,errors,error_rate,correct_rate)
+    return (matches+errors,matches,errors,error_rate,correct_rate)
     
 
 def track_confusions(sm, seq1, seq2,filename):
@@ -726,9 +729,7 @@ def print_confusions():
     pd.DataFrame(deletions).to_csv("deletions.csv",index=None)
     pd.DataFrame(substitutions).to_csv("substitutions.csv",index=None)
 
-# TODO - For some reason I was getting two different counts depending on how I count the matches,
-# so do an assertion in this code to make sure we're getting matching counts.
-# This might slow things down.
+
 def get_match_count(sm):
     "Return the number of matches, given a sequence matcher object."
     matches = None
@@ -751,8 +752,7 @@ def get_error_count(sm, PRINT=True):
     
     
     opcodes = sm.get_opcodes()
-    #print(len(opcodes))
-    #[print(x) for x in opcodes if x[0] == 'replace' and x[5] in mono_syllables]
+
     errors = []
     for x in opcodes:
         if x[0] == 'delete' and x[5] not in mono_syllables:
@@ -769,7 +769,8 @@ def get_error_count(sm, PRINT=True):
 
             total_errors+=1
             total_sub +=1
-    # just print what we are ignoring 
+            
+    # just print what we are ignoring if needed
     if PRINT:
         for x in opcodes:
             if x[0] == 'delete' and x[5] in mono_syllables:
@@ -788,8 +789,6 @@ def get_error_count(sm, PRINT=True):
     error_lengths = [max(x[2] - x[1], x[4] - x[3]) for x in errors]
     return reduce(lambda x, y: x + y, error_lengths, 0)
 
-# TODO - This is long and ugly.  Perhaps we can break it up?
-# It would make more sense for this to just return the two strings...
 def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suffix2=None):
     """Given a sequence matcher and the two sequences, print a Sphinx-style
     'diff' off the two."""
@@ -878,6 +877,7 @@ def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suf
     if suffix1: ref_tokens.append(suffix1)
     if suffix2: hyp_tokens.append(suffix2)
     print(' '.join(ref_tokens))
+    print('='*100)
     print(' '.join(hyp_tokens))
 
 def mean(seq):
