@@ -502,13 +502,19 @@ def main(args):
     print('WER: {:10.3%} ({:10d} / {:10d})'.format(wer, error_count, error_count+match_count))
     print('WRR: {:10.3%} ({:10d} / {:10d})'.format(wrr, match_count, error_count+match_count))
     print('SER: {:10.3%} ({:10d} / {:10d})'.format(ser, sent_error_count, counter))
-    print('TOTAL_ERRORS: {:10d}'.format(total_errors//2))
-    print('SUBSTITUTIONS: {:10d} {:10.3%}'.format(total_sub//2, (total_sub//2)/error_count))
-    print('DELETIONS: {:10d} {:10.3%}'.format(total_del//2, (total_del//2)/error_count))
-    print('INSERTIONS: {:10d} {:10.3%}'.format(total_ins//2, (total_ins//2)/error_count))
-    
     if not confusions:
+        print('TOTAL_ERRORS: {:10d}'.format(total_errors//2))
+        print('SUBSTITUTIONS: {:10d} {:10.3%}'.format(total_sub//2, (total_sub//2)/error_count))
+        print('DELETIONS: {:10d} {:10.3%}'.format(total_del//2, (total_del//2)/error_count))
+        print('INSERTIONS: {:10d} {:10.3%}'.format(total_ins//2, (total_ins//2)/error_count))
         pd.DataFrame(calc_table).to_csv("detailed_results.csv",index=None)
+    elif confusions:
+        print('TOTAL_ERRORS: {:10d}'.format(total_errors))
+        print('SUBSTITUTIONS: {:10d} {:10.3%}'.format(total_sub, total_sub/error_count))
+        print('DELETIONS: {:10d} {:10.3%}'.format(total_del, total_del/error_count))
+        print('INSERTIONS: {:10d} {:10.3%}'.format(total_ins, total_ins/error_count))
+    
+    
 
 
 
@@ -655,7 +661,7 @@ def print_instances(ref, hyp, sm, id_=None):
     print('Correct          = {0:6.1%}  {1:3d}   ({2:6d})'.format(correct_rate, matches, matches+errors))
     print('Errors           = {0:6.1%}  {1:3d}   ({2:6d})'.format(error_rate, errors, matches+errors))
 
-    return (matches+errors,matches,errors,error_rate,correct_rate)
+    return (len(ref),matches,errors,error_rate,correct_rate)
     
 
 def track_confusions(sm, seq1, seq2,filename):
@@ -729,7 +735,9 @@ def print_confusions():
     pd.DataFrame(deletions).to_csv("deletions.csv",index=None)
     pd.DataFrame(substitutions).to_csv("substitutions.csv",index=None)
 
-
+# TODO - For some reason I was getting two different counts depending on how I count the matches,
+# so do an assertion in this code to make sure we're getting matching counts.
+# This might slow things down.
 def get_match_count(sm):
     "Return the number of matches, given a sequence matcher object."
     matches = None
@@ -752,7 +760,8 @@ def get_error_count(sm, PRINT=True):
     
     
     opcodes = sm.get_opcodes()
-
+    #print(len(opcodes))
+    #[print(x) for x in opcodes if x[0] == 'replace' and x[5] in mono_syllables]
     errors = []
     for x in opcodes:
         if x[0] == 'delete' and x[5] not in mono_syllables:
@@ -769,8 +778,7 @@ def get_error_count(sm, PRINT=True):
 
             total_errors+=1
             total_sub +=1
-            
-    # just print what we are ignoring if needed
+    # just print what we are ignoring 
     if PRINT:
         for x in opcodes:
             if x[0] == 'delete' and x[5] in mono_syllables:
@@ -789,6 +797,8 @@ def get_error_count(sm, PRINT=True):
     error_lengths = [max(x[2] - x[1], x[4] - x[3]) for x in errors]
     return reduce(lambda x, y: x + y, error_lengths, 0)
 
+# TODO - This is long and ugly.  Perhaps we can break it up?
+# It would make more sense for this to just return the two strings...
 def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suffix2=None):
     """Given a sequence matcher and the two sequences, print a Sphinx-style
     'diff' off the two."""
@@ -864,6 +874,7 @@ def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suf
                     s1[i] = '*' * len(w2)
                 if not w2:
                     s2[i] = '*' * len(w1)
+#             print(w1,w2,s1,s2)     
             if w1 in mono_syllables and w2 in mono_syllables:       
                 s1 = map(lambda x: colored(x, 'magenta','on_grey'), s1)
                 s2 = map(lambda x: colored(x, 'magenta','on_grey'), s2)
@@ -877,7 +888,6 @@ def print_diff(sm, seq1, seq2, prefix1='REF:', prefix2='HYP:', suffix1=None, suf
     if suffix1: ref_tokens.append(suffix1)
     if suffix2: hyp_tokens.append(suffix2)
     print(' '.join(ref_tokens))
-    print('='*100)
     print(' '.join(hyp_tokens))
 
 def mean(seq):
